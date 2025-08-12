@@ -8,10 +8,10 @@
   let margin = { left: 0.3, right: 0.3, top: 0.1, bottom: 0.1 };
 
   let valueFields = [
-    { key: "tradeBalanceDiff", label: "Trade balance" },
-    { key: "export", label: "Export (Real Value USD)" },
-    { key: "normPCI", label: "Norm PCI" },
     { key: "normRCA", label: "Norm RCA" },
+    { key: "normPCI", label: "Norm PCI" },
+    { key: "export", label: "Export (Real Value USD)" },
+    { key: "tradeBalanceDiff", label: "Trade balance" },
   ];
   let selectedField = valueFields[0].key;
 
