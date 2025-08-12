@@ -59,16 +59,15 @@
   }
   function num(x) {
     if (x == null) return 0;
-    // accept "1.234.567,89" and "1,234,567.89" and bare ints
+
     const s = String(x).trim().replace(/\s/g, "");
-    // try european
+
     if (/,/.test(s) && /\./.test(s)) {
-      // detect which is thousand vs decimal by last separator
       if (s.lastIndexOf(",") > s.lastIndexOf(".")) {
         return parseFloat(s.replace(/\./g, "").replace(",", "."));
       }
     }
-    // fallback: strip thousands commas/dots
+
     const cleaned = s.replace(/(?<=\d)[.,](?=\d{3}(\D|$))/g, "");
     return parseFloat(cleaned.replace(",", "."));
   }
@@ -159,9 +158,7 @@
       .groups(raw, (d) => String(d["HS92-4 Short Label"] ?? "").trim())
       .sort(([a], [b]) => d3.ascending(a, b));
 
-    // global min/max for normalization/log
     let valuesFlat = [];
-
     for (const [, values] of groupedByLabel) {
       const byYearExp = d3.rollup(
         values,
@@ -173,13 +170,22 @@
         (vv) => d3.sum(vv, (dd) => extractField(dd, "import")),
         (dd) => dd.Year
       );
-      const startYear = allYears[0];
-      const tb0 =
-        (byYearExp.get(startYear) ?? 0) - (byYearImp.get(startYear) ?? 0);
 
-      for (const y of allYears) {
-        const tb = (byYearExp.get(y) ?? 0) - (byYearImp.get(y) ?? 0);
-        valuesFlat.push(tb - tb0);
+      if (selectedField === "tradeBalanceDiff") {
+        const startYear = allYears[0];
+        const tb0 =
+          (byYearExp.get(startYear) ?? 0) - (byYearImp.get(startYear) ?? 0);
+        for (const y of allYears) {
+          const tb = (byYearExp.get(y) ?? 0) - (byYearImp.get(y) ?? 0);
+          valuesFlat.push(tb - tb0);
+        }
+      } else {
+        const byYearSel = d3.rollup(
+          values,
+          (vv) => d3.sum(vv, (dd) => extractField(dd, selectedField)),
+          (dd) => dd.Year
+        );
+        for (const y of allYears) valuesFlat.push(byYearSel.get(y) ?? 0);
       }
     }
 
@@ -213,13 +219,24 @@
         (vv) => d3.sum(vv, (dd) => extractField(dd, "import")),
         (dd) => dd.Year
       );
+      const byYearSel = d3.rollup(
+        values,
+        (vv) => d3.sum(vv, (dd) => extractField(dd, selectedField)),
+        (dd) => dd.Year
+      );
+
       const startYear = allYears[0];
       const tb0 =
         (byYearExp.get(startYear) ?? 0) - (byYearImp.get(startYear) ?? 0);
 
       const valuesAligned = allYears.map((y) => {
-        let value = (byYearExp.get(y) ?? 0) - (byYearImp.get(y) ?? 0);
-        value = value - tb0;
+        let value;
+        if (selectedField === "tradeBalanceDiff") {
+          const tb = (byYearExp.get(y) ?? 0) - (byYearImp.get(y) ?? 0);
+          value = tb - tb0;
+        } else {
+          value = byYearSel.get(y) ?? 0;
+        }
         if (selectedMode === "normalized") {
           value = max !== min ? (value - min) / (max - min) : 0.5;
         }
@@ -253,7 +270,6 @@
       return { label, group, values: valuesAligned, y, path, total };
     });
 
-    // group & sort stays the same
     let g = d3
       .groups(series, (d) => d.group)
       .map(([key, items]) => ({
