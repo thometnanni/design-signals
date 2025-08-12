@@ -4,10 +4,11 @@
 
   let graphWidthCm = 21;
   let rowHeightCm = 2;
-  let labelWidthCm = 5.5;
+  let labelWidthCm = 8.5;
   let margin = { left: 0.3, right: 0.3, top: 0.1, bottom: 0.1 };
 
   let valueFields = [
+    { key: "tradeBalanceDiff", label: "Trade balance" },
     { key: "export", label: "Export (Real Value USD)" },
     { key: "normPCI", label: "Norm PCI" },
     { key: "normRCA", label: "Norm RCA" },
@@ -15,16 +16,18 @@
   let selectedField = valueFields[0].key;
 
   let modes = [
-    { key: "raw", label: "Local" },
     { key: "normalized", label: "Global" },
+    { key: "raw", label: "Local" },
     { key: "log", label: "Log" },
   ];
   let selectedMode = modes[0].key;
 
   let groupFields = [
     { key: "Chemical Vertical", label: "Chemical Vertical" },
-    { key: "NACE-4 Labels", label: "NACE-4" },
     { key: "Nace-2 Label", label: "NACE-2" },
+    { key: "NACE-4 Labels", label: "NACE-4" },
+    { key: "HS92-2 Short Label", label: "HS92-2" },
+    { key: "HS92-4 Short Label", label: "HS92-4" },
   ];
   let selectedGroupField = groupFields[0].key;
 
@@ -36,11 +39,11 @@
   let selectedGroupSort = groupSortModes[0].key;
 
   let itemSortModes = [
-    { key: "selectedFirst", label: "Selected first" },
     { key: "az", label: "Items A–Z" },
     { key: "valueDesc", label: "Items by total ↓" },
     { key: "valueAsc", label: "Items by total ↑" },
   ];
+
   let selectedItemSort = itemSortModes[0].key;
 
   let allYears = [];
@@ -54,17 +57,40 @@
   function cmToPx(cm) {
     return (cm * 96) / 2.54;
   }
+  function num(x) {
+    if (x == null) return 0;
+    // accept "1.234.567,89" and "1,234,567.89" and bare ints
+    const s = String(x).trim().replace(/\s/g, "");
+    // try european
+    if (/,/.test(s) && /\./.test(s)) {
+      // detect which is thousand vs decimal by last separator
+      if (s.lastIndexOf(",") > s.lastIndexOf(".")) {
+        return parseFloat(s.replace(/\./g, "").replace(",", "."));
+      }
+    }
+    // fallback: strip thousands commas/dots
+    const cleaned = s.replace(/(?<=\d)[.,](?=\d{3}(\D|$))/g, "");
+    return parseFloat(cleaned.replace(",", "."));
+  }
+
+  function getCol(d, names) {
+    for (const n of names) if (d[n] != null) return d[n];
+    return 0;
+  }
 
   function extractField(d, field) {
     if (field === "export") {
-      return +String(d["Export (Real Value USD)"])
-        .replace(/\./g, "")
-        .replace(/,/g, "")
-        .replace(/\s/g, "");
+      return num(
+        getCol(d, ["Export (Real Value USD)", "Export  (Real Value USD)"])
+      );
+    } else if (field === "import") {
+      return num(
+        getCol(d, ["Import (Real Value USD)", "Import  (Real Value USD)"])
+      );
     } else if (field === "normPCI") {
-      return parseFloat(String(d["Norm PCI"]).replace(",", "."));
+      return parseFloat(String(getCol(d, ["Norm PCI"])).replace(",", ".")) || 0;
     } else if (field === "normRCA") {
-      return parseFloat(String(d["Norm RCA"]).replace(",", "."));
+      return parseFloat(String(getCol(d, ["Norm RCA"])).replace(",", ".")) || 0;
     }
     return 0;
   }
@@ -129,44 +155,94 @@
       return;
     }
 
-    let valuesFlat = raw
-      .map((d) => extractField(d, selectedField))
-      .filter((v) => !isNaN(v));
-    let min = d3.min(valuesFlat) ?? 0;
-    let max = d3.max(valuesFlat) ?? 1;
-
     const groupedByLabel = d3
-      .groups(raw, (d) => d["HS92-4 Short Label"])
+      .groups(raw, (d) => String(d["HS92-4 Short Label"] ?? "").trim())
       .sort(([a], [b]) => d3.ascending(a, b));
+
+    // global min/max for normalization/log
+    let valuesFlat = [];
+
+    for (const [, values] of groupedByLabel) {
+      const byYearExp = d3.rollup(
+        values,
+        (vv) => d3.sum(vv, (dd) => extractField(dd, "export")),
+        (dd) => dd.Year
+      );
+      const byYearImp = d3.rollup(
+        values,
+        (vv) => d3.sum(vv, (dd) => extractField(dd, "import")),
+        (dd) => dd.Year
+      );
+      const startYear = allYears[0];
+      const tb0 =
+        (byYearExp.get(startYear) ?? 0) - (byYearImp.get(startYear) ?? 0);
+
+      for (const y of allYears) {
+        const tb = (byYearExp.get(y) ?? 0) - (byYearImp.get(y) ?? 0);
+        valuesFlat.push(tb - tb0);
+      }
+    }
+
+    const min = d3.min(valuesFlat) ?? 0;
+    const max = d3.max(valuesFlat) ?? 1;
+
+    const rowHeightPx = cmToPx(rowHeightCm);
+    let yLogGlobal = null;
+    if (selectedMode === "log") {
+      const lo = min,
+        hi = max;
+      const pad = lo === hi ? (hi === 0 ? 1 : Math.abs(hi) * 0.1) : 0;
+      yLogGlobal = d3
+        .scaleSymlog()
+        .constant(1)
+        .domain([lo - pad, hi + pad])
+        .range([rowHeightPx - cmToPx(margin.bottom), cmToPx(margin.top)])
+        .clamp(true);
+    }
 
     series = groupedByLabel.map(([label, values]) => {
       const group = values[0]?.[selectedGroupField] ?? "";
-      const yearMap = new Map(
-        values.map((d) => [d.Year, extractField(d, selectedField)])
+
+      const byYearExp = d3.rollup(
+        values,
+        (vv) => d3.sum(vv, (dd) => extractField(dd, "export")),
+        (dd) => dd.Year
       );
+      const byYearImp = d3.rollup(
+        values,
+        (vv) => d3.sum(vv, (dd) => extractField(dd, "import")),
+        (dd) => dd.Year
+      );
+      const startYear = allYears[0];
+      const tb0 =
+        (byYearExp.get(startYear) ?? 0) - (byYearImp.get(startYear) ?? 0);
 
-      const valuesAligned = allYears.map((year) => {
-        let rawValue = yearMap.get(year);
-        let value = rawValue === undefined || isNaN(rawValue) ? 0 : rawValue;
-
+      const valuesAligned = allYears.map((y) => {
+        let value = (byYearExp.get(y) ?? 0) - (byYearImp.get(y) ?? 0);
+        value = value - tb0;
         if (selectedMode === "normalized") {
-          value = max !== min ? (value - min) / (max - min) : 0;
-        } else if (selectedMode === "log") {
-          value = value > 0 ? Math.log(value) : 0;
+          value = max !== min ? (value - min) / (max - min) : 0.5;
         }
-        return { year, value };
+        return { year: y, value };
       });
 
-      const rowHeightPx = cmToPx(rowHeightCm);
-      const yDomain =
-        selectedMode === "normalized"
-          ? [0, 1]
-          : [0, d3.max(valuesAligned, (d) => d.value) || 1];
-
-      const y = d3
-        .scaleLinear()
-        .domain(yDomain)
-        .range([rowHeightPx - cmToPx(margin.bottom), cmToPx(margin.top)]);
+      let y;
+      if (selectedMode === "log") {
+        y = yLogGlobal;
+      } else {
+        const vMin = d3.min(valuesAligned, (d) => d.value) ?? 0;
+        const vMax = d3.max(valuesAligned, (d) => d.value) ?? 1;
+        y = d3
+          .scaleLinear()
+          .domain(
+            selectedMode === "normalized"
+              ? [0, 1]
+              : vMin < 0
+                ? [vMin, vMax]
+                : [0, vMax || 1]
+          )
+          .range([rowHeightPx - cmToPx(margin.bottom), cmToPx(margin.top)]);
+      }
 
       const path = d3
         .line()
@@ -174,16 +250,17 @@
         .y((d) => y(d.value))(valuesAligned);
 
       const total = totalOfValues(valuesAligned);
-
       return { label, group, values: valuesAligned, y, path, total };
     });
 
+    // group & sort stays the same
     let g = d3
       .groups(series, (d) => d.group)
-      .map(([key, items]) => {
-        const total = d3.sum(items, (s) => s.total);
-        return { key, items, total };
-      });
+      .map(([key, items]) => ({
+        key,
+        items,
+        total: d3.sum(items, (s) => s.total),
+      }));
 
     if (selectedGroupSort === "az") {
       g.sort((a, b) => d3.ascending(a.key || "", b.key || ""));
@@ -228,24 +305,6 @@
     groups = g;
   }
 
-  function toggleLabel(label) {
-    if (selectedLabels.has(label)) {
-      selectedLabels.delete(label);
-    } else {
-      selectedLabels.add(label);
-    }
-    selectedLabels = selectedLabels;
-  }
-
-  function toggleCollapse(groupKey) {
-    if (collapsedGroups.has(groupKey)) {
-      collapsedGroups.delete(groupKey);
-    } else {
-      collapsedGroups.add(groupKey);
-    }
-    collapsedGroups = collapsedGroups;
-  }
-
   $: {
     selectedField,
       selectedMode,
@@ -256,20 +315,6 @@
       rowHeightCm,
       graphWidthCm;
 
-    if (allYears.length) {
-      xScale = d3
-        .scaleLinear()
-        .domain(d3.extent(allYears))
-        .range([
-          cmToPx(margin.left),
-          cmToPx(graphWidthCm) - cmToPx(margin.right),
-        ]);
-    }
-
-    buildSeries();
-  }
-
-  $: {
     if (allYears.length) {
       xScale = d3
         .scaleLinear()
@@ -399,7 +444,7 @@
 
     {#each groups as g}
       <div class="group">
-        <div class="group-header" on:click={() => toggleCollapse(g.key)}>
+        <div class="group-header">
           <div class="group-title">{g.key || "Unassigned"}</div>
           <div class="group-meta">
             Items: {g.items.length} • Total: {d3.format(",.2f")(g.total)}
@@ -452,7 +497,8 @@
     --chip: #f5f5f5;
     --group-bg: #fafafa;
   }
-  article, * {
+  article,
+  * {
     font-family: Arial, Helvetica, sans-serif;
   }
   .menu {
@@ -532,7 +578,6 @@
     justify-content: space-between;
     align-items: baseline;
     padding: 8px 10px;
-    cursor: pointer;
     user-select: none;
     border-bottom: 1px solid var(--grid);
   }
