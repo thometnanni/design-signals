@@ -84,15 +84,37 @@
     }
     return 0;
   }
+  function pxToCm(px) {
+    return (px * 2.54) / 96;
+  }
+
   function downloadSVG(svgNode, filename) {
+    // Measure what’s actually drawn (uses the live node, not the clone)
+    const bbox = svgNode.getBBox(); // includes paths but not stroke width; good enough for this
+    const rect = svgNode.getBoundingClientRect();
+    const wPx = rect.width;
+    const hPx = rect.height;
+
+    // How far content spills above/below the canvas?
+    const overflowTopPx = Math.max(0, -bbox.y);
+    const overflowBottomPx = Math.max(0, bbox.y + bbox.height - hPx);
+    const newHeightPx = hPx + overflowTopPx + overflowBottomPx;
+
+    // Clone and style
     const clone = svgNode.cloneNode(true);
     const style = document.createElement("style");
     style.textContent = `
-      .path{fill:none;stroke:#111;stroke-width:2;opacity:.95}
-      .grid-line,.tick-line{display:none}
-      .baseline-line{stroke:#ddd;stroke-width:1}
-    `;
+    .path{fill:none;stroke:#111;stroke-width:2;opacity:.95}
+    .grid-line,.tick-line{display:none}
+    .baseline-line{stroke:#ddd;stroke-width:1}
+  `;
     clone.insertBefore(style, clone.firstChild);
+
+    clone.setAttribute("viewBox", `0 ${-overflowTopPx} ${wPx} ${newHeightPx}`);
+
+    clone.setAttribute("width", `${pxToCm(wPx)}cm`);
+    clone.setAttribute("height", `${pxToCm(newHeightPx)}cm`);
+
     const serializer = new XMLSerializer();
     let svgString = serializer.serializeToString(clone);
     svgString = svgString.replace(
@@ -101,6 +123,7 @@
     );
     svgString = svgString.replace(/background:[^;"]*;?/gi, "");
     svgString = '<?xml version="1.0" encoding="UTF-8"?>\n' + svgString;
+
     const blob = new Blob([svgString], { type: "image/svg+xml;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -113,6 +136,7 @@
       URL.revokeObjectURL(url);
     }, 150);
   }
+
   async function downloadAllSVGs() {
     const svgs = Array.from(document.querySelectorAll("svg.row-svg"));
     for (let i = 0; i < svgs.length; i++) {
@@ -376,7 +400,10 @@
   </div>
 </div>
 
-<article id="chart">
+<article
+  id="chart"
+  style="padding-top: {amplitudeCm / 2}cm; padding-bottom: {amplitudeCm / 2}cm;"
+>
   {#if groups.length > 0}
     <div class="header-row">
       <div class="label" style="width:{labelWidthCm}cm;">&nbsp;</div>
@@ -405,11 +432,8 @@
 
     {#each groups as g}
       <div class="group">
-        <div class="group-header">
+        <div class="group-header" style="height:{rowHeightCm + 'cm'};">
           <div class="group-title">{g.key || "Unassigned"}</div>
-          <div class="group-meta">
-            Items: {g.items.length} • Intensity: {d3.format(",.2f")(g.total)}
-          </div>
         </div>
 
         {#if !collapsedGroups.has(g.key)}
@@ -548,25 +572,12 @@
   }
 
   .group {
-    border: 1px solid var(--grid);
-    margin-bottom: 10px;
     background: var(--group-bg);
   }
-  .group-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    padding: 8px 10px;
-    user-select: none;
-    border-bottom: 1px solid var(--grid);
-  }
+
   .group-title {
     font-weight: bold;
     font-size: 14px;
-  }
-  .group-meta {
-    color: var(--muted);
-    font-size: 12px;
   }
 
   input[type="number"] {
