@@ -89,18 +89,15 @@
   }
 
   function downloadSVG(svgNode, filename) {
-    // Measure what’s actually drawn (uses the live node, not the clone)
-    const bbox = svgNode.getBBox(); // includes paths but not stroke width; good enough for this
+    const bbox = svgNode.getBBox();
     const rect = svgNode.getBoundingClientRect();
     const wPx = rect.width;
     const hPx = rect.height;
 
-    // How far content spills above/below the canvas?
     const overflowTopPx = Math.max(0, -bbox.y);
     const overflowBottomPx = Math.max(0, bbox.y + bbox.height - hPx);
     const newHeightPx = hPx + overflowTopPx + overflowBottomPx;
 
-    // Clone and style
     const clone = svgNode.cloneNode(true);
     const style = document.createElement("style");
     style.textContent = `
