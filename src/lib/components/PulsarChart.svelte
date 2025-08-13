@@ -1,6 +1,11 @@
 <script>
-  import { onMount } from "svelte";
   import * as d3 from "d3";
+  import { onMount } from "svelte";
+  import Row from "$lib/components/Row.svelte";
+  import ScaleControls from "$lib/components/ScaleControls.svelte";
+  import { cmToPx } from "$lib/units";
+  import { createNormalizer } from "$lib/scales";
+  import { downloadAllSVGs } from "$lib/download-svg";
 
   let graphWidthCm = 21;
   let rowHeightCm = 1;
@@ -8,18 +13,18 @@
   let labelWidthCm = 8.5;
   let margin = { left: 0.3, right: 0.3, top: 0.1, bottom: 0.1 };
 
-  let valueFields = [
-    {
-      key: "tradeBalanceDiff",
-      label: "Trade balance ",
-    },
+  let scaleType = "symlog";
+  let scaleParam = Math.pow(2, 29);
+
+  const valueFields = [
+    { key: "tradeBalanceDiff", label: "Trade balance" },
     { key: "export", label: "Export (Real Value USD)" },
     { key: "normPCI", label: "Norm PCI" },
     { key: "normRCA", label: "Norm RCA" },
   ];
   let selectedField = valueFields[0].key;
 
-  let groupFields = [
+  const groupFields = [
     { key: "Chemical Vertical", label: "Chemical Vertical" },
     { key: "Nace-2 Label", label: "NACE-2" },
     { key: "NACE-4 Labels", label: "NACE-4" },
@@ -28,31 +33,28 @@
   ];
   let selectedGroupField = groupFields[0].key;
 
-  let groupSortModes = [
+  const groupSortModes = [
     { key: "az", label: "Groups A–Z" },
     { key: "valueDesc", label: "Groups by intensity ↓" },
     { key: "valueAsc", label: "Groups by intensity ↑" },
   ];
   let selectedGroupSort = groupSortModes[0].key;
 
-  let itemSortModes = [
+  const itemSortModes = [
     { key: "az", label: "Items A–Z" },
     { key: "valueDesc", label: "Items by intensity ↓" },
     { key: "valueAsc", label: "Items by intensity ↑" },
   ];
   let selectedItemSort = itemSortModes[0].key;
 
-  let allYears = [];
   let raw = [];
+  let allYears = [];
+  let xScale;
   let series = [];
   let groups = [];
-  let xScale;
   let selectedLabels = new Set();
   let collapsedGroups = new Set();
 
-  function cmToPx(cm) {
-    return (cm * 96) / 2.54;
-  }
   function num(x) {
     if (x == null) return 0;
     const s = String(x).trim().replace(/\s/g, "");
@@ -83,71 +85,6 @@
       return parseFloat(String(getCol(d, ["Norm RCA"])).replace(",", ".")) || 0;
     }
     return 0;
-  }
-  function pxToCm(px) {
-    return (px * 2.54) / 96;
-  }
-
-  function downloadSVG(svgNode, filename) {
-    const bbox = svgNode.getBBox();
-    const rect = svgNode.getBoundingClientRect();
-    const wPx = rect.width;
-    const hPx = rect.height;
-
-    const overflowTopPx = Math.max(0, -bbox.y);
-    const overflowBottomPx = Math.max(0, bbox.y + bbox.height - hPx);
-    const newHeightPx = hPx + overflowTopPx + overflowBottomPx;
-
-    const clone = svgNode.cloneNode(true);
-    const style = document.createElement("style");
-    style.textContent = `
-    .path{fill:none;stroke:#111;stroke-width:2;opacity:.95}
-    .grid-line,.tick-line{display:none}
-    .baseline-line{stroke:#ddd;stroke-width:1}
-  `;
-    clone.insertBefore(style, clone.firstChild);
-
-    clone.setAttribute("viewBox", `0 ${-overflowTopPx} ${wPx} ${newHeightPx}`);
-
-    clone.setAttribute("width", `${pxToCm(wPx)}cm`);
-    clone.setAttribute("height", `${pxToCm(newHeightPx)}cm`);
-
-    const serializer = new XMLSerializer();
-    let svgString = serializer.serializeToString(clone);
-    svgString = svgString.replace(
-      /(<svg[^>]+)style="[^"]*background[^"]*"([^>]*>)/gi,
-      "$1$2"
-    );
-    svgString = svgString.replace(/background:[^;"]*;?/gi, "");
-    svgString = '<?xml version="1.0" encoding="UTF-8"?>\n' + svgString;
-
-    const blob = new Blob([svgString], { type: "image/svg+xml;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    setTimeout(() => {
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-    }, 150);
-  }
-
-  async function downloadAllSVGs() {
-    const svgs = Array.from(document.querySelectorAll("svg.row-svg"));
-    for (let i = 0; i < svgs.length; i++) {
-      const svg = svgs[i];
-      const labelNode = svg
-        .closest(".row")
-        ?.querySelector(".label button, .label span");
-      const name = (labelNode?.textContent || `chart_${i + 1}`)
-        .trim()
-        .toLowerCase()
-        .replace(/[^a-z0-9_\-]+/g, "_");
-      downloadSVG(svg, `${name}.svg`);
-      await new Promise((r) => setTimeout(r, 160));
-    }
   }
 
   function buildSeries() {
@@ -201,31 +138,29 @@
           : (byYearSel.get(baseYear) ?? 0);
 
       const valuesAligned = allYears.map((y) => {
-        let v;
-        if (selectedField === "tradeBalanceDiff") {
-          v = (byYearExp.get(y) ?? 0) - (byYearImp.get(y) ?? 0);
-        } else {
-          v = byYearSel.get(y) ?? 0;
-        }
+        const v =
+          selectedField === "tradeBalanceDiff"
+            ? (byYearExp.get(y) ?? 0) - (byYearImp.get(y) ?? 0)
+            : (byYearSel.get(y) ?? 0);
         const delta = v - baseVal;
         globalAbsMax = Math.max(globalAbsMax, Math.abs(delta));
         return { year: y, value: delta };
       });
 
       const intensity = d3.sum(valuesAligned, (d) => Math.abs(d.value));
-
       temp.push({ label, group, valuesAligned, intensity });
     }
 
     if (!Number.isFinite(globalAbsMax) || globalAbsMax === 0)
       globalAbsMax = 1e-9;
-
     const amplitudePx = cmToPx(amplitudeCm);
 
     series = temp.map(({ label, group, valuesAligned, intensity }) => {
       const svgH = cmToPx(rowHeightCm);
       const baselineY = svgH / 2;
-      const toY = (delta) => baselineY - (delta / globalAbsMax) * amplitudePx;
+
+      const norm = createNormalizer(globalAbsMax, scaleType, scaleParam);
+      const toY = (delta) => baselineY - norm(delta) * amplitudePx;
 
       const path = d3
         .line()
@@ -241,6 +176,8 @@
           domain: () => [-globalAbsMax, globalAbsMax],
           baselineY,
           toY,
+          scaleType,
+          scaleParam,
           _: "pulsar",
         },
         total: intensity,
@@ -300,7 +237,9 @@
       selectedLabels,
       rowHeightCm,
       graphWidthCm,
-      amplitudeCm;
+      amplitudeCm,
+      scaleType,
+      scaleParam;
 
     if (allYears.length) {
       xScale = d3
@@ -324,50 +263,33 @@
       (a, b) => a - b
     );
   });
+
+  const setSelectedField = (v) => (selectedField = v);
+  const setRowHeightCm = (v) => (rowHeightCm = v);
+  const setGraphWidthCm = (v) => (graphWidthCm = v);
+  const setAmplitudeCm = (v) => (amplitudeCm = v);
+  const setScaleType = (v) => (scaleType = v);
+  const setScaleParam = (v) => (scaleParam = v);
+  const onDownloadAll = () => downloadAllSVGs();
 </script>
 
 <div class="menu no-print">
-  <div class="controls">
-    <label>
-      Parameter:
-      <select bind:value={selectedField}>
-        {#each valueFields as f}
-          <option value={f.key}>{f.label}</option>
-        {/each}
-      </select>
-    </label>
-    <label>
-      Amplitude (cm):
-      <input
-        type="number"
-        step="0.1"
-        min="0.1"
-        max="12"
-        bind:value={amplitudeCm}
-      />
-    </label>
-    <label>
-      Row height (cm):
-      <input
-        type="number"
-        step="0.1"
-        min="0.2"
-        max="6"
-        bind:value={rowHeightCm}
-      />
-    </label>
-    <label>
-      Graph width (cm):
-      <input
-        type="number"
-        step="0.1"
-        min="5"
-        max="60"
-        bind:value={graphWidthCm}
-      />
-    </label>
-    <button on:click={downloadAllSVGs}>Download all rows as SVG</button>
-  </div>
+  <ScaleControls
+    {valueFields}
+    {selectedField}
+    {rowHeightCm}
+    {graphWidthCm}
+    {amplitudeCm}
+    {scaleType}
+    {scaleParam}
+    {onDownloadAll}
+    {setSelectedField}
+    {setRowHeightCm}
+    {setGraphWidthCm}
+    {setAmplitudeCm}
+    {setScaleType}
+    {setScaleParam}
+  />
 
   <div class="controls">
     <label>
@@ -435,42 +357,16 @@
 
         {#if !collapsedGroups.has(g.key)}
           {#each g.items as d}
-            <div class="row">
-              <div class="label" style="width:{labelWidthCm}cm;">
-                <span>{d.label}</span>
-              </div>
-
-              <svg
-                class="row-svg"
-                width={graphWidthCm + "cm"}
-                height={rowHeightCm + "cm"}
-              >
-                {#each allYears as year, j}
-                  {#if allYears.length < 21 || j % Math.ceil(allYears.length / 20) === 0 || j === allYears.length - 1}
-                    <line
-                      x1={xScale(year)}
-                      x2={xScale(year)}
-                      y1={0}
-                      y2={cmToPx(rowHeightCm)}
-                      class="grid-line"
-                    />
-                  {/if}
-                {/each}
-
-                <line
-                  x1={cmToPx(margin.left)}
-                  x2={cmToPx(graphWidthCm) - cmToPx(margin.right)}
-                  y1={cmToPx(rowHeightCm) / 2}
-                  y2={cmToPx(rowHeightCm) / 2}
-                  class="baseline-line"
-                />
-
-                <path
-                  d={d.path}
-                  class="path {selectedLabels.has(d.label) ? 'selected' : ''}"
-                />
-              </svg>
-            </div>
+            <Row
+              label={d.label}
+              path={d.path}
+              {rowHeightCm}
+              {graphWidthCm}
+              {margin}
+              {allYears}
+              {xScale}
+              selected={selectedLabels.has(d.label)}
+            />
           {/each}
         {/if}
       </div>
@@ -508,12 +404,8 @@
     flex-wrap: wrap;
   }
 
-  .header-row,
-  .row {
-    display: flex;
-    align-items: flex-start;
-  }
   .header-row {
+    display: flex;
     align-items: flex-end;
     position: sticky;
     top: 0;
@@ -521,24 +413,9 @@
     z-index: 10;
     border-bottom: 1px solid var(--grid);
   }
-
   .label {
-    font-size: 14px;
-    text-align: right;
-    padding-right: 8px;
-    white-space: nowrap;
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
+    width: 8.5cm;
   }
-  .label span {
-    border: 1px solid var(--grid);
-    background: var(--chip);
-    padding: 4px 8px;
-    border-radius: 999px;
-    font-size: 12px;
-  }
-
   .tick-line,
   .grid-line {
     stroke: var(--grid);
@@ -549,36 +426,12 @@
     fill: var(--accent);
   }
 
-  .row-svg {
-    display: block;
-    overflow: visible;
-  } /* allow overlap into neighbors */
-  .path {
-    fill: none !important;
-    stroke: var(--accent);
-    stroke-width: 2;
-    opacity: 0.95;
-  }
-  .path.selected {
-    stroke-width: 3;
-    opacity: 1;
-  }
-  .baseline-line {
-    stroke: #ddd;
-    stroke-width: 1;
-  }
-
   .group {
     background: var(--group-bg);
   }
-
   .group-title {
     font-weight: bold;
     font-size: 14px;
-  }
-
-  input[type="number"] {
-    width: 70px;
   }
 
   @media print {

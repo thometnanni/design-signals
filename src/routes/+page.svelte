@@ -1,10 +1,5 @@
-<main>
-  <a href="timeline">timeline</a><br />
-  <a href="pulsar">pulsar</a><br />
-</main>
+<script>
+  import PulsarChart from "$lib/components/PulsarChart.svelte";
+</script>
 
-<style>
-  main {
-    font-family: Arial, Helvetica, sans-serif;
-  }
-</style>
+<PulsarChart />
